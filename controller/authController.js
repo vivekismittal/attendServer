@@ -1,10 +1,11 @@
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
-const Faculty = require('../models/facultyModel');
+const User = require('../models/userModel');
 const catchAsync=require('./../catchAsync')
 const dotenv = require('dotenv');
 const AppError = require('./../utils/appError')
 const { promisify } = require('util');
+const Faculty = require('./../models/facultyModel');
 
 const signToken = id => {
     return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -37,14 +38,14 @@ const createSendToken = (user, statusCode, res) => {
   };
 
 exports.signup = catchAsync(async (req, res, next) => {
-	const newFaculty = await Faculty.create(req.body);
+	const newUser = await User.create(req.body);
 	
-	const token = signToken(newFaculty._id);
-	// await Faculty.findByIdAndUpdate(newFaculty._id, { verified: false });
+	const token = signToken(newUser._id);
+	
 	res.status(201).json({
 		status: 'success',
 		body: {
-			faculty: newFaculty,
+			user: newUser,
 			message: "Verification Link has been sent to your Email, Please verify your Id"
 		}
 	});
@@ -61,11 +62,11 @@ exports.signup = catchAsync(async (req, res, next) => {
 	});
 	const mailOptions = {
 		from: process.env.MAIL_ID,
-		to: '8as1910062@gmail.com',
+		to: newfaculty.emailId,
 		subject: 'Verify Your Account',
-		text: `${token}`,
-		html:'<h1>hii</h1>'
+		text: `localhost:8000/api/v1/faculties/verification/${token}`,
 	};
+	console.log(newUser.emailId)
 	transporter.sendMail(mailOptions, function (err, info) {
 		if (err) {
 			console.log(err);
@@ -80,23 +81,118 @@ exports.verification = catchAsync(async (req, res, next) => {
 	const decoded = await promisify(jwt.verify)(req.params.token, process.env.JWT_SECRET);
 
 	
-	const currentFaculty = await Faculty.findById(decoded.id);
-	await Faculty.findByIdAndUpdate(currentFaculty._id, { verified: true });
-	return res.redirect(`${process.env.URL}/faculties/${currentFaculty._id}`)
+	const currentUser = await User.findById(decoded.id);
+	await User.findByIdAndUpdate(currentUser._id, { verified: true });
+	if (currentUser.role == "faculty") {
+		Faculty.create({
+			emailId: currentUser.emailId
+		});
+	}
+	return res.redirect(`${process.env.URL}/users/${currentUser._id}`)
 });
 
 exports.login = catchAsync(async (req, res, next) => {
 	const { emailId, password } = req.body;
 	if (!emailId || !password) return next(new AppError('Please provide Email and Password', 400));
 
-	const faculty = await Faculty.findOne({ emailId }).select('+password');
+	const user = await User.findOne({ emailId }).select('+password');
 
-	if (!faculty || !(await faculty.correctPassword(password, faculty.password)))
+	if (!user || !(await user.correctPassword(password, user.password)))
 		return next(new AppError('Invalid Email or Password', 401));
 	
-	if(!faculty.verified)
+	if(!user.verified)
 		return next(new AppError('You have not verify your Account, Please first verify your Account'),401)
 		
-		createSendToken(faculty, 200, res);
+		createSendToken(user, 200, res);
 	
-}); 		
+}); 
+
+exports.protect = catchAsync(async (req, res, next) => {
+	
+	let token;
+	if (
+	  req.headers.authorization &&
+	  req.headers.authorization.startsWith('Bearer')
+	) {
+	  token = req.headers.authorization.split(' ')[1];
+	} else if (req.cookies.jwt) {
+	  token = req.cookies.jwt;
+	}
+  
+	if (!token) {
+	  return next(
+		new AppError('You are not logged in! Please log in to get access.', 401)
+	  );
+	}
+  
+	
+	const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
+  
+	
+	const currentUser = await User.findById(decoded.id);
+	if (!currentUser) {
+	  return next(
+		new AppError(
+		  'The user belonging to this token does no longer exist.',
+		  401
+		)
+	  );
+	}
+
+	
+	
+	// if (currentUser.changedPasswordAfter(decoded.iat)) {
+	//   return next(
+	// 	new AppError('User recently changed password! Please log in again.', 401)
+	//   );
+	// }
+  
+	
+	req.user = currentUser;
+	res.locals.user = currentUser;
+	next();
+  });
+  
+  
+//   exports.isLoggedIn = async (req, res, next) => {
+// 	if (req.cookies.jwt) {
+// 	  try {
+	
+// 		const decoded = await promisify(jwt.verify)(
+// 		  req.cookies.jwt,
+// 		  process.env.JWT_SECRET
+// 		);
+  
+		
+// 		const currentUser = await User.findById(decoded.id);
+// 		if (!currentUser) {
+// 		  return next();
+// 		}
+  
+		
+// 		if (currentUser.changedPasswordAfter(decoded.iat)) {
+// 		  return next();
+// 		}
+  
+		
+// 		res.locals.user = currentUser;
+// 		return next();
+// 	  } catch (err) {
+// 		return next();
+// 	  }
+// 	}
+// 	next();
+//   };
+  
+exports.restrictTo = (...roles) => {
+	return (req, res, next) => {
+	  // roles ['admin', 'lead-guide']. role='user'
+	  if (!roles.includes(req.user.role)) {
+		  return next(
+			  new AppError('You do not have permission to perform this action', 403)
+		);
+	  }
+  
+	  next();
+	};
+  };
